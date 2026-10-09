@@ -1,0 +1,2 @@
+CVE-2026-57433
+# Perl-base CVE - not exploitable as app doesn't process untrusted serialized Perl data

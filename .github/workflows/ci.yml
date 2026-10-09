@@ -1,0 +1,103 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt bandit
+
+      - name: Run AI Agent Simulation
+        run: python src/agent.py
+
+      - name: Test Vulnerable Server + Payload
+        run: |
+          python src/vulnerable_server.py & sleep 3
+          python examples/payload_demo.py
+
+      - name: Bandit Security Scan
+        run: |
+          bandit -r src/ examples/ -ll --format json --output bandit-report.json || echo "Bandit scan completed (educational vulns expected)"
+          cat bandit-report.json || true
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build multi-arch Docker image (with cache)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          platforms: linux/amd64,linux/arm64
+          tags: ai-hacking-simulator:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Detailed multi-arch manifest inspection
+        run: |
+          echo "=== Docker Buildx Builder Info ==="
+          docker buildx ls
+          echo ""
+          echo "=== Inspecting multi-arch image manifest ==="
+          docker buildx imagetools inspect ai-hacking-simulator:latest || echo "Manifest inspection (build-only mode)"
+          echo ""
+          echo "=== Image layers and platforms ==="
+          docker images --format "{{.Repository}}:{{.Tag}} ({{.Size}})" ai-hacking-simulator || true
+
+      - name: Automated multi-arch verification
+        run: |
+          echo "Verifying multi-arch support..."
+          MANIFEST=$(docker buildx imagetools inspect ai-hacking-simulator:latest --format '{{json .Manifests}}' 2>/dev/null || echo '[]')
+          AMD64=$(echo $MANIFEST | grep -o 'linux/amd64' | wc -l)
+          ARM64=$(echo $MANIFEST | grep -o 'linux/arm64' | wc -l)
+          echo "Found AMD64 platforms: $AMD64"
+          echo "Found ARM64 platforms: $ARM64"
+          if [ "$AMD64" -ge 1 ] && [ "$ARM64" -ge 1 ]; then
+            echo "✅ Multi-arch manifest verification PASSED"
+          else
+            echo "❌ Multi-arch verification FAILED"
+            exit 1
+          fi
+
+      - name: Vulnerability Scan (Trivy)
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: 'ai-hacking-simulator:latest'
+          format: 'table'
+          exit-code: '1'
+          ignore-unfixed: true
+          severity: 'CRITICAL,HIGH'
+
+      - name: Semgrep Scan
+        uses: returntocorp/semgrep-action@v1
+        with:
+          config: .semgrep.yml
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: python
+          config-file: ./.github/codeql.yml
+
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@v3
